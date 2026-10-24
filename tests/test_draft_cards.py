@@ -199,3 +199,61 @@ def test_routes_with_fastapi(store, monkeypatch):
     assert client.post(f"{base}/approve", json={"version": 2}).json()["status"] == "approved"
     assert client.post(f"{base}/state", json={"status": "sent"}).status_code == 400
     assert client.post(f"{base}/state", json={"status": "draft"}).json()["approved_version"] is None
+
+
+# ---------------------------------------------------------------- placeholder guard
+def test_find_placeholders_catches_template_slots():
+    f = {"subject": "Intro to [Company]", "body": "Hi [First Name],\n\nOn [date] we tested [Model 1] and {{price}} <<x>>.",
+         "to": ["[Recipient] <a@b.com>"]}
+    assert store_mod.find_placeholders(f) == ["[Company]", "[First Name]", "[date]", "[Model 1]", "{{price}}", "<<x>>", "[Recipient]"]
+
+
+def test_find_placeholders_ignores_normal_text():
+    f = {"subject": "Notes", "body": "See [1] and [2]. Quote [sic]. Link [docs](https://x.y). Sarah Chen <s@x.com>",
+         "to": ["Sarah Chen <sarah@example.com>"]}
+    assert store_mod.find_placeholders(f) == []
+
+
+def test_approve_refuses_placeholders_until_filled(store):
+    rec = store.create(kind="email", fields=_email(body="Hi [First Name], see you [date]."))
+    with pytest.raises(store_mod.DraftError) as blocked:
+        store.approve(rec["id"], 1)
+    assert blocked.value.code == 409 and "[First Name]" in str(blocked.value)
+    with pytest.raises(store_mod.DraftError):
+        store.set_status(rec["id"], "approved")
+    with pytest.raises(store_mod.DraftError):
+        store.set_status(rec["id"], "sent", "via Gmail")
+    rec = store.revise(rec["id"], fields={"body": "Hi Sarah, see you Friday."})
+    assert store.approve(rec["id"], 2)["status"] == "approved"
+    assert store.set_status(rec["id"], "sent", "via Gmail")["status"] == "sent"
+
+
+def test_failed_and_discarded_still_allowed_with_placeholders(store):
+    rec = store.create(kind="email", fields=_email(body="Hi [First Name]"))
+    assert store.set_status(rec["id"], "failed", "placeholders")["status"] == "failed"
+    assert store.set_status(rec["id"], "discarded", by="user")["status"] == "discarded"
+
+
+def test_tool_reports_placeholders(handlers):
+    draft, read, _ = handlers
+    out = json.loads(draft(_email(body="Hi [First Name]")))
+    assert out["placeholders"] == ["[First Name]"] and out["next"].startswith("UNFILLED PLACEHOLDERS")
+    assert json.loads(read({"draft_id": out["draft_id"]}))["placeholders"] == ["[First Name]"]
+
+
+def test_approve_route_returns_409_with_placeholders(store, monkeypatch):
+    fastapi = pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    spec = importlib.util.spec_from_file_location("draft_cards_api_test2", ROOT / "dashboard" / "plugin_api.py")
+    api = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(api)
+    api_store = api._store.DraftStore(connect=store._connect, clock=store._clock)
+    monkeypatch.setattr(api._store, "DraftStore", lambda: api_store)
+    monkeypatch.setattr(api, "_notify", lambda _id: None)
+    app = fastapi.FastAPI()
+    app.include_router(api.router, prefix="/api/plugins/draft-cards")
+    client = TestClient(app)
+    rec = store.create(kind="email", fields=_email(body="Hi [First Name]"))
+    r = client.post(f"/api/plugins/draft-cards/drafts/{rec['id']}/approve", json={"version": 1})
+    assert r.status_code == 409 and "placeholders" in r.json()["detail"]

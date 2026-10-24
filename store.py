@@ -220,6 +220,9 @@ class DraftStore:
                 raise DraftError("Only the latest version can be approved.", 409)
             if row["status"] not in ("draft", "failed", "approved"):
                 raise DraftError(f"This draft is already {row['status']}.", 409)
+            found = find_placeholders(versions[-1]["fields"])
+            if found:
+                raise placeholder_error(found)
             conn.execute(
                 "UPDATE drafts SET status = 'approved', approved_version = ?, status_detail = '', status_at = ?, updated_at = ? WHERE id = ?",
                 (int(version), now, now, draft_id),
@@ -237,6 +240,14 @@ class DraftStore:
             if by == "user" and current in ("sent", "saved"):
                 raise DraftError(f"This draft is already {current}.", 409)
             approved = row["approved_version"]
+            if status in ("approved", "sent", "saved"):
+                versions = self._versions(conn, draft_id)
+                target = versions[-1]
+                if status != "approved" and approved is not None:
+                    target = next((v for v in versions if v["v"] == approved), target)
+                found = find_placeholders(target["fields"])
+                if found:
+                    raise placeholder_error(found)
             if status == "approved":
                 approved = self._versions(conn, draft_id)[-1]["v"]
             elif status in ("draft", "discarded"):
@@ -331,6 +342,39 @@ def normalize_fields(fields: dict, kind: str) -> dict:
         "body": _clip(fields.get("body", ""), "body").strip("\n"),
     }
     return clean
+
+
+# ---------------------------------------------------------------------- placeholders
+# Template slots the agent left unfilled: [First Name], [Model 1], [date], {{name}}, <<company>>.
+# A bracket needs at least one letter, so citations like [1] pass; "[text](url)" links pass too.
+_PLACEHOLDER_RES = (
+    re.compile(r"\[(?=[^\[\]\n]*[A-Za-z])[^\[\]\n]{1,60}\](?!\()"),
+    re.compile(r"\{\{[^{}\n]{1,60}\}\}"),
+    re.compile(r"<<[^<>\n]{1,60}>>"),
+)
+_PLACEHOLDER_OK = {"[sic]", "[x]", "[ ]"}
+
+
+def find_placeholders(fields: dict) -> list[str]:
+    """Unfilled template placeholders in subject, body and recipients, in order, deduped."""
+    fields = fields or {}
+    parts = [str(fields.get("subject") or ""), str(fields.get("body") or "")]
+    for key in ("from", "to", "cc", "bcc"):
+        value = fields.get(key)
+        parts.extend(value if isinstance(value, list) else [str(value or "")])
+    found: list[str] = []
+    for text in parts:
+        for rx in _PLACEHOLDER_RES:
+            for m in rx.finditer(str(text)):
+                hit = m.group(0)
+                if hit.lower() not in _PLACEHOLDER_OK and hit not in found:
+                    found.append(hit)
+    return found
+
+
+def placeholder_error(found: list[str]) -> "DraftError":
+    shown = ", ".join(found[:5]) + (" …" if len(found) > 5 else "")
+    return DraftError(f"This draft still has placeholders: {shown}. Fill them in before it can be approved or sent.", 409)
 
 
 def directive(draft_id: str, card: int) -> str:

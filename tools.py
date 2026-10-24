@@ -6,7 +6,7 @@ import json
 import logging
 from typing import Any
 
-from .store import DraftError, DraftStore, directive, plain_text
+from .store import DraftError, DraftStore, directive, find_placeholders, plain_text
 
 logger = logging.getLogger(__name__)
 
@@ -112,6 +112,7 @@ def _summary(record: dict) -> dict:
         "platform": record["platform"],
         "fields": latest["fields"],
         "edited_by_user": latest["author"] == "user",
+        "placeholders": find_placeholders(latest["fields"]),
     }
 
 
@@ -139,11 +140,17 @@ def make_handlers(store_factory=DraftStore):
                 store.prune()
             latest = record["versions"][-1]
             _notify(record["id"])
+            found = find_placeholders(latest["fields"])
+            warning = (
+                f"UNFILLED PLACEHOLDERS: {', '.join(found)}. The card can't be approved or sent until they're "
+                "filled. Fill them from what you know, or ask the user for the missing values, then revise. "
+                if found else ""
+            )
             return _ok({
                 **_summary(record),
                 "card": directive(record["id"], latest["card"]),
                 "text_fallback": plain_text(record, latest),
-                "next": (
+                "next": warning + (
                     "Desktop app: reply with a one-line intro, then the `card` line alone on its own line. "
                     "Don't paste the draft text, the card shows it. Other surfaces: show text_fallback. "
                     "Wait for the user's approval before sending."

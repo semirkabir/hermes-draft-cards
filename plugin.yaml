@@ -1,5 +1,5 @@
 name: draft-cards
-version: 0.1.0
+version: 0.1.1
 description: >-
   Reviewable email and message drafts as cards in the Hermes desktop chat. Revisions highlight
   what changed, you can edit inline, and nothing is sent until you press Send.

@@ -38,6 +38,13 @@ the words that changed; the user can edit inline; and nothing is sent until they
 
 ## Rules
 
+- Use a card for every outbound draft on the desktop app (email, LinkedIn, Slack, X, any message
+  you write for the user to send), without being asked. Never paste a draft as plain markdown there.
+- No placeholders. Before calling `draft_card`, fill every template slot (`[First Name]`,
+  `[Model 1]`, `[date]`, `{{name}}`) from what you know, or ask the user for the value. The tool
+  returns `placeholders`; when it's non-empty, revise before showing the card as ready. The store
+  refuses to approve, send or save a version that still has them (409), so don't work around it.
+
 - Never send a draft whose status is not `approved` unless the user explicitly approved it in
   chat; in that case call `draft_card_status` with `approved` first, then send.
 - Explicit approval means a message that names sending and refers to this draft ("send it",
